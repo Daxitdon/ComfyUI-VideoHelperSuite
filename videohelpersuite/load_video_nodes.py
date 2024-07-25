@@ -36,85 +36,82 @@ def target_size(width, height, force_size, custom_width, custom_height, downscal
     height = int(height/downscale_ratio + 0.5) * downscale_ratio
     return (width, height)
 
-def cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
+
+def cv_frame_generator(video, force_rate, frame_load_cap, seconds_load_cap, skip_first_frames,
                        select_every_nth, meta_batch=None, unique_id=None):
     video_cap = cv2.VideoCapture(strip_path(video))
     if not video_cap.isOpened():
         raise ValueError(f"{video} could not be loaded with cv.")
-    pbar = ProgressBar(frame_load_cap) if frame_load_cap > 0 else None
 
     # extract video metadata
-    fps = video_cap.get(cv2.CAP_PROP_FPS)
-    fps = 30 if fps > 30 else fps
+    original_fps = video_cap.get(cv2.CAP_PROP_FPS)
     width = int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps
+    duration = total_frames / original_fps
 
-    # set video_cap to look at start_index frame
-    total_frame_count = 0
-    total_frames_evaluated = -1
-    frames_added = 0
-    base_frame_time = 1 / fps
-    prev_frame = None
-
-    if force_rate == 0:
-        target_frame_time = base_frame_time
+    # Determine target fps based on force_rate
+    if force_rate > 0:
+        target_fps = min(force_rate, original_fps)
     else:
-        target_frame_time = 1/force_rate
+        target_fps = min(30, int(original_fps))
 
-    yield (width, height, fps, duration, total_frames, target_frame_time)
+    # Calculate the frame dropping ratio
+    frame_drop_ratio = original_fps / target_fps
+
+    # Calculate frames to load based on seconds_load_cap or frame_load_cap
+    if seconds_load_cap > 0:
+        frames_to_load = int(seconds_load_cap * target_fps)
+    elif frame_load_cap > 0:
+        frames_to_load = frame_load_cap
+    else:
+        frames_to_load = int(total_frames / frame_drop_ratio)
+
+    pbar = ProgressBar(frames_to_load) if frames_to_load > 0 else None
+
+    yield (width, height, target_fps, duration, total_frames, 1 / target_fps)
     if meta_batch is not None:
-        yield min(frame_load_cap, total_frames)
+        yield min(frames_to_load, total_frames)
 
-    time_offset=target_frame_time - base_frame_time
+    frame_count = 0
+    frames_added = 0
     while video_cap.isOpened():
-        if time_offset < target_frame_time:
-            is_returned = video_cap.grab()
-            # if didn't return frame, video has ended
-            if not is_returned:
-                break
-            time_offset += base_frame_time
-        if time_offset < target_frame_time:
-            continue
-        time_offset -= target_frame_time
-        # if not at start_index, skip doing anything with frame
-        total_frame_count += 1
-        if total_frame_count <= skip_first_frames:
-            continue
-        else:
-            total_frames_evaluated += 1
+        is_returned, frame = video_cap.read()
+        if not is_returned:
+            break
 
-        # if should not be selected, skip doing anything with frame
-        if total_frames_evaluated%select_every_nth != 0:
+        frame_count += 1
+
+        # Use frame_drop_ratio to determine if we should keep this frame
+        if frame_count % frame_drop_ratio >= 1:
             continue
 
-        # opencv loads images in BGR format (yuck), so need to convert to RGB for ComfyUI use
-        # follow up: can videos ever have an alpha channel?
-        # To my testing: No. opencv has no support for alpha
-        unused, frame = video_cap.retrieve()
+        # Apply other frame selection criteria
+        if frame_count <= skip_first_frames:
+            continue
+
+        if (frame_count - skip_first_frames - 1) % select_every_nth != 0:
+            continue
+
+        # Process the frame
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # convert frame to comfyui's expected format
-        # TODO: frame contains no exif information. Check if opencv2 has already applied
         frame = np.array(frame, dtype=np.float32)
-        torch.from_numpy(frame).div_(255)
-        if prev_frame is not None:
-            inp  = yield prev_frame
-            if inp is not None:
-                #ensure the finally block is called
-                return
-        prev_frame = frame
+        frame = torch.from_numpy(frame).div_(255)
+
+        yield frame
+
         frames_added += 1
         if pbar is not None:
-            pbar.update_absolute(frames_added, frame_load_cap)
-        # if cap exists and we've reached it, stop processing frames
-        if frame_load_cap > 0 and frames_added >= frame_load_cap:
+            pbar.update_absolute(frames_added, frames_to_load)
+
+        if frames_added >= frames_to_load:
             break
+
     if meta_batch is not None:
         meta_batch.inputs.pop(unique_id)
         meta_batch.has_closed_inputs = True
-    if prev_frame is not None:
-        yield prev_frame
+
+    video_cap.release()
 
 #Python 3.12 adds an itertools.batched, but it's easily replicated for legacy support
 def batched(it, n):
@@ -125,13 +122,14 @@ def batched_vae_encode(images, vae, frames_per_batch):
         image_batch = torch.from_numpy(np.array(batch))
         yield from vae.encode(image_batch).numpy()
 
+
 def load_video_cv(video: str, force_rate: int, force_size: str,
-                  custom_width: int,custom_height: int, frame_load_cap: int,
-                  skip_first_frames: int, select_every_nth: int,
+                  custom_width: int, custom_height: int, frame_load_cap: int,
+                  seconds_load_cap: float, skip_first_frames: int, select_every_nth: int,
                   meta_batch=None, unique_id=None, memory_limit_mb=None, vae=None):
     if meta_batch is None or unique_id not in meta_batch.inputs:
-        gen = cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
-                                 select_every_nth, meta_batch, unique_id)
+        gen = cv_frame_generator(video, force_rate, frame_load_cap, seconds_load_cap,
+                                 skip_first_frames, select_every_nth, meta_batch, unique_id)
         (width, height, fps, duration, total_frames, target_frame_time) = next(gen)
 
         if meta_batch is not None:
@@ -143,62 +141,69 @@ def load_video_cv(video: str, force_rate: int, force_size: str,
 
     memory_limit = None
     if memory_limit_mb is not None:
-        memory_limit *= 2 ** 20
+        memory_limit = memory_limit_mb * 2 ** 20
     else:
-        #TODO: verify if garbage collection should be performed here.
-        #leaves ~128 MB unreserved for safety
         try:
             memory_limit = (psutil.virtual_memory().available + psutil.swap_memory().free) - 2 ** 27
         except:
             logger.warn("Failed to calculate available memory. Memory load limit has been disabled")
+
     if memory_limit is not None:
         if vae is not None:
-            #space required to load as f32, exist as latent with wiggle room, decode to f32
-            max_loadable_frames = int(memory_limit//(width*height*3*(4+4+1/10)))
+            max_loadable_frames = int(memory_limit // (width * height * 3 * (4 + 4 + 1 / 10)))
         else:
-            #TODO: use better estimate for when vae is not None
-            #Consider completely ignoring for load_latent case?
-            max_loadable_frames = int(memory_limit//(width*height*3*(.1)))
+            max_loadable_frames = int(memory_limit // (width * height * 3 * 0.1))
+
+        if seconds_load_cap > 0:
+            max_loadable_frames = min(max_loadable_frames, int(seconds_load_cap * fps))
+        elif frame_load_cap > 0:
+            max_loadable_frames = min(max_loadable_frames, frame_load_cap)
+
         if meta_batch is not None:
             if meta_batch.frames_per_batch > max_loadable_frames:
-                raise RuntimeError(f"Meta Batch set to {meta_batch.frames_per_batch} frames but only {max_loadable_frames} can fit in memory")
+                raise RuntimeError(
+                    f"Meta Batch set to {meta_batch.frames_per_batch} frames but only {max_loadable_frames} can fit in memory")
             gen = itertools.islice(gen, meta_batch.frames_per_batch)
         else:
             original_gen = gen
             gen = itertools.islice(gen, max_loadable_frames)
+
     downscale_ratio = getattr(vae, "downscale_ratio", 8)
     frames_per_batch = (1920 * 1080 * 16) // (width * height) or 1
+
     if force_size != "Disabled" or vae is not None:
         new_size = target_size(width, height, force_size, custom_width, custom_height, downscale_ratio)
         if new_size[0] != width or new_size[1] != height:
             def rescale(frame):
                 s = torch.from_numpy(np.fromiter(frame, np.dtype((np.float32, (height, width, 3)))))
-                s = s.movedim(-1,1)
+                s = s.movedim(-1, 1)
                 s = common_upscale(s, new_size[0], new_size[1], "lanczos", "center")
-                return s.movedim(1,-1).numpy()
+                return s.movedim(1, -1).numpy()
+
             gen = itertools.chain.from_iterable(map(rescale, batched(gen, frames_per_batch)))
     else:
         new_size = width, height
+
     if vae is not None:
         gen = batched_vae_encode(gen, vae, frames_per_batch)
-        vw,vh = new_size[0]//downscale_ratio, new_size[1]//downscale_ratio
-        images = torch.from_numpy(np.fromiter(gen, np.dtype((np.float32, (4,vh,vw)))))
+        vw, vh = new_size[0] // downscale_ratio, new_size[1] // downscale_ratio
+        images = torch.from_numpy(np.fromiter(gen, np.dtype((np.float32, (4, vh, vw)))))
     else:
-        #Some minor wizardry to eliminate a copy and reduce max memory by a factor of ~2
         images = torch.from_numpy(np.fromiter(gen, np.dtype((np.float32, (new_size[1], new_size[0], 3)))))
+
     if meta_batch is None and memory_limit is not None:
         try:
             next(original_gen)
             raise RuntimeError(f"Memory limit hit after loading {len(images)} frames. Stopping execution.")
         except StopIteration:
             pass
+
     if len(images) == 0:
         raise RuntimeError("No frames generated")
 
-    #Setup lambda for lazy audio capture
     audio = lazy_get_audio(video, skip_first_frames * target_frame_time,
-                               frame_load_cap*target_frame_time*select_every_nth)
-    #Adjust target_frame_time for select_every_nth
+                           len(images) * target_frame_time * select_every_nth)
+
     target_frame_time *= select_every_nth
     video_info = {
         "source_fps": fps,
@@ -206,12 +211,13 @@ def load_video_cv(video: str, force_rate: int, force_size: str,
         "source_duration": duration,
         "source_width": width,
         "source_height": height,
-        "loaded_fps": 1/target_frame_time,
+        "loaded_fps": 1 / target_frame_time,
         "loaded_frame_count": len(images),
         "loaded_duration": len(images) * target_frame_time,
         "loaded_width": new_size[0],
         "loaded_height": new_size[1],
     }
+
     if vae is None:
         return (images, fps, len(images), audio, video_info, None)
     else:
@@ -282,6 +288,7 @@ class LoadVideoPath:
                  "custom_width": ("INT", {"default": 512, "min": 0, "max": DIMMAX, "step": 8}),
                  "custom_height": ("INT", {"default": 512, "min": 0, "max": DIMMAX, "step": 8}),
                 "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1}),
+                "seconds_load_cap": ("FLOAT", {"default": 0, "min": 0, "max": 3600, "step": 0.1}),
                 "skip_first_frames": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1}),
                 "select_every_nth": ("INT", {"default": 1, "min": 1, "max": BIGMAX, "step": 1}),
             },
