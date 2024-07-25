@@ -45,6 +45,7 @@ def cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
 
     # extract video metadata
     fps = video_cap.get(cv2.CAP_PROP_FPS)
+    fps = 30 if fps > 30 else fps
     width = int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
