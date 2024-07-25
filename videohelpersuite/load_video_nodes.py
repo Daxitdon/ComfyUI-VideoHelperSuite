@@ -213,9 +213,9 @@ def load_video_cv(video: str, force_rate: int, force_size: str,
         "loaded_height": new_size[1],
     }
     if vae is None:
-        return (images, len(images), audio, video_info, None)
+        return (images, fps, len(images), audio, video_info, None)
     else:
-        return (None, len(images), audio, video_info, {"samples": images})
+        return (None, fps, len(images), audio, video_info, {"samples": images})
 
 
 
@@ -296,8 +296,8 @@ class LoadVideoPath:
 
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
-    RETURN_TYPES = ("IMAGE", "INT", "AUDIO", "VHS_VIDEOINFO", "LATENT")
-    RETURN_NAMES = ("IMAGE", "frame_count", "audio", "video_info", "LATENT")
+    RETURN_TYPES = ("IMAGE", "FLOAT", "INT", "AUDIO", "VHS_VIDEOINFO", "LATENT")
+    RETURN_NAMES = ("IMAGE", "frame_rate", "frame_count", "audio", "video_info", "LATENT")
 
     FUNCTION = "load_video"
 
