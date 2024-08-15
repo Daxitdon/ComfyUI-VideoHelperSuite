@@ -342,7 +342,7 @@ class VideoCombine:
         file_path = os.path.join(full_output_folder, file)
         Image.fromarray(tensor_to_bytes(first_image)).save(
             file_path,
-            pnginfo=metadata,
+            # pnginfo=metadata,
             compress_level=4,
         )
         output_files.append(file_path)
