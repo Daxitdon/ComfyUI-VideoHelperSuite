@@ -508,41 +508,44 @@ class VideoCombine:
 
             output_files.append(file_path)
 
-            if audio is not None:
-                # Create audio file if input was provided
-                output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
-                output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
-                if "audio_pass" not in video_format:
-                    logger.warn("Selected video format does not have explicit audio support")
-                    video_format["audio_pass"] = ["-c:a", "libopus"]
+            try:
+                if audio is not None:
+                    # Create audio file if input was provided
+                    output_file_with_audio = f"{filename}_{counter:05}-audio.{video_format['extension']}"
+                    output_file_with_audio_path = os.path.join(full_output_folder, output_file_with_audio)
+                    if "audio_pass" not in video_format:
+                        logger.warn("Selected video format does not have explicit audio support")
+                        video_format["audio_pass"] = ["-c:a", "libopus"]
 
 
-                # FFmpeg command with audio re-encoding
-                #TODO: expose audio quality options if format widgets makes it in
-                #Reconsider forcing apad/shortest
-                channels = audio['waveform'].size(1)
-                min_audio_dur = total_frames_output / frame_rate + 1
-                mux_args = [ffmpeg_path, "-v", "error", "-n", "-i", file_path,
-                            "-ar", str(audio['sample_rate']), "-ac", str(channels),
-                            "-f", "f32le", "-i", "-", "-c:v", "copy"] \
-                            + video_format["audio_pass"] \
-                            + ["-af", "apad=whole_dur="+str(min_audio_dur),
-                               "-shortest", output_file_with_audio_path]
+                    # FFmpeg command with audio re-encoding
+                    #TODO: expose audio quality options if format widgets makes it in
+                    #Reconsider forcing apad/shortest
+                    channels = audio['waveform'].size(1)
+                    min_audio_dur = total_frames_output / frame_rate + 1
+                    mux_args = [ffmpeg_path, "-v", "error", "-n", "-i", file_path,
+                                "-ar", str(audio['sample_rate']), "-ac", str(channels),
+                                "-f", "f32le", "-i", "-", "-c:v", "copy"] \
+                                + video_format["audio_pass"] \
+                                + ["-af", "apad=whole_dur="+str(min_audio_dur),
+                                   "-shortest", output_file_with_audio_path]
 
-                audio_data = audio['waveform'].squeeze(0).transpose(0,1) \
-                        .numpy().tobytes()
-                try:
-                    res = subprocess.run(mux_args, input=audio_data,
-                                         env=env, capture_output=True, check=True)
-                except subprocess.CalledProcessError as e:
-                    raise Exception("An error occured in the ffmpeg subprocess:\n" \
-                            + e.stderr.decode("utf-8"))
-                if res.stderr:
-                    print(res.stderr.decode("utf-8"), end="", file=sys.stderr)
-                output_files.append(output_file_with_audio_path)
-                #Return this file with audio to the webui.
-                #It will be muted unless opened or saved with right click
-                file = output_file_with_audio
+                    audio_data = audio['waveform'].squeeze(0).transpose(0,1) \
+                            .numpy().tobytes()
+                    try:
+                        res = subprocess.run(mux_args, input=audio_data,
+                                             env=env, capture_output=True, check=True)
+                    except subprocess.CalledProcessError as e:
+                        raise Exception("An error occured in the ffmpeg subprocess:\n" \
+                                + e.stderr.decode("utf-8"))
+                    if res.stderr:
+                        print(res.stderr.decode("utf-8"), end="", file=sys.stderr)
+                    output_files.append(output_file_with_audio_path)
+                    #Return this file with audio to the webui.
+                    #It will be muted unless opened or saved with right click
+                    file = output_file_with_audio
+            except Exception as e:
+                logger.error(f"Error occurred while processing audio: {e}")
 
         previews = [
             {
